@@ -98,7 +98,7 @@ describe('API de catálogo', () => {
     await http().get('/productos').set(auth).expect(200).expect([]);
   });
 
-  it('protege el catálogo y deja pública la ruta de salud', async () => {
+  it('protege el catálogo y deja públicas las rutas de información', async () => {
     const http = () => request(app.getHttpServer());
 
     // Sin cabecera.
@@ -115,6 +115,14 @@ describe('API de catálogo', () => {
     // La salud responde sin credenciales: la consultan el balanceador y el pipeline.
     const salud = await http().get('/salud').expect(200);
     expect(salud.body).toMatchObject({ estado: 'ok', version: 'pruebas' });
+
+    // La portada también, y anuncia la versión desplegada y las rutas.
+    const portada = await http().get('/').expect(200);
+    expect(portada.body).toMatchObject({
+      servicio: 'catalogo-api',
+      version: 'pruebas',
+      rutas: { salud: '/salud', productos: '/productos' },
+    });
   });
 
   it('rechaza cuerpos e identificadores que no cumplen las reglas', async () => {
