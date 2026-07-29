@@ -22,8 +22,12 @@
 
 ### Variables ----------------------------------------------------------------
 
-# Servicio desplegado en AWS
-@url = https://ca-8682bfbdc490411db35171ebb1ee6e51.ecs.us-east-1.on.aws
+# Servicio desplegado en AWS.
+#
+# Ojo: este dominio lo asigna Express Mode con un identificador aleatorio, así que
+# CAMBIA si se destruye y se vuelve a crear la infraestructura. Para consultarlo:
+#     cd infra/app && terraform output -raw url_servicio
+@url = https://ca-321fbdf619f1437287dc5a71a387a177.ecs.us-east-1.on.aws
 
 # Desarrollo local (npm run start:dev)
 # @url = http://localhost:3000
