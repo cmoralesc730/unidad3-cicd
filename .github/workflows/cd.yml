@@ -177,46 +177,20 @@ jobs:
 
       # ECS realiza un despliegue canary y vigila la versión nueva antes de
       # trasladarle todo el tráfico, así que la actualización no es inmediata.
-      # Durante el despliegue conviven DOS configuraciones activas —la anterior y
-      # la nueva— y el balanceador reparte el tráfico entre ambas mientras dura el
-      # canary. El despliegue solo ha terminado cuando queda una sola, y es la
-      # nueva.
+      # No se espera aquí a que el despliegue termine, y es deliberado.
       #
-      # No sirve mirar `service.status.statusCode`: ese campo describe el estado
-      # del SERVICIO, que vale ACTIVE de forma permanente, también mientras el
-      # despliegue está en curso. Consultarlo daría por bueno el despliegue de
-      # inmediato y dejaría pasar una versión que aún no atiende todo el tráfico.
-      - name: Esperar a que el despliegue se estabilice
-        env:
-          IMAGEN: ${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ github.sha }}
-        run: |
-          set -euo pipefail
-
-          for intento in $(seq 1 60); do
-            aws ecs describe-express-gateway-service \
-              --service-arn "${{ vars.ECS_SERVICE_ARN }}" \
-              --region "${{ vars.AWS_REGION }}" > estado.json
-
-            total=$(jq '.service.activeConfigurations | length' estado.json)
-            imagenes=$(jq -r '[.service.activeConfigurations[].primaryContainer.image] | join(" ")' estado.json)
-
-            echo "Intento $intento: $total configuración(es) activa(s) -> $imagenes"
-
-            if [ "$total" -eq 1 ] && [ "$imagenes" = "$IMAGEN" ]; then
-              echo "Despliegue completado: toda la capacidad sirve la imagen nueva."
-              exit 0
-            fi
-
-            if [ "$total" -eq 1 ] && [ "$imagenes" != "$IMAGEN" ]; then
-              echo "::error::El despliegue se revirtió; la configuración activa es $imagenes"
-              exit 1
-            fi
-
-            sleep 15
-          done
-
-          echo "::error::El despliegue no convergió en 15 minutos."
-          exit 1
+      # Se intentó vigilando `activeConfigurations`, pero esa lista es un detalle
+      # interno del canary de Express Mode y atraviesa estados transitorios: hay
+      # instantes en los que solo figura la configuración ANTERIOR, simplemente
+      # porque la nueva todavía no se ha registrado. Interpretar eso como una
+      # reversión produce falsos negativos, y distinguir un estado transitorio de
+      # uno definitivo desde fuera no es fiable.
+      #
+      # Lo que sí es observable sin ambigüedad es el resultado: qué versión sirve
+      # el servicio de cara al exterior. De eso se encarga el job `comprobar`,
+      # que espera hasta que la respuesta sea consistente. Si el despliegue se
+      # revierte, esa comprobación nunca se cumple y el pipeline queda en rojo,
+      # que es exactamente el comportamiento correcto.
 
       - name: Recuperar la URL pública
         id: servicio
@@ -247,16 +221,27 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Se exigen DIEZ respuestas consecutivas con la versión correcta, no una.
-      # Con una sola bastaría con acertar la petición que cae en la tarea nueva
-      # mientras el canary todavía reparte tráfico, y el pipeline daría por bueno
-      # un despliegue a medias.
+      # Esta es la ÚNICA puerta que decide si el despliegue fue bien, así que
+      # tiene que ser a la vez paciente y estricta.
+      #
+      # Paciente: Express Mode despliega en canary y tarda entre 5 y 15 minutos en
+      # trasvasar todo el tráfico. Se espera hasta 20 minutos.
+      #
+      # Estricta: se exigen DIEZ respuestas consecutivas con la versión correcta,
+      # no una. Con una sola bastaría con acertar la petición que cae en la tarea
+      # nueva mientras el canary todavía reparte tráfico entre ambas versiones, y
+      # el pipeline daría por bueno un despliegue a medias.
+      #
+      # Si ECS revierte el despliegue —lo hace de forma automática ante errores
+      # 5XX durante el trasvase—, el servicio seguirá sirviendo la versión
+      # anterior, esta comprobación agotará su plazo y el pipeline quedará en
+      # rojo. Es el comportamiento correcto: el commit no llegó a producción.
       - name: La ruta de salud sirve esta versión
         run: |
           set -euo pipefail
           url="${{ needs.desplegar.outputs.url }}/salud"
 
-          for intento in $(seq 1 20); do
+          for intento in $(seq 1 40); do
             aciertos=0
 
             for _ in $(seq 1 10); do
@@ -264,7 +249,7 @@ jobs:
               [ "$version" = "${{ github.sha }}" ] && aciertos=$((aciertos + 1))
             done
 
-            echo "Intento $intento: $aciertos/10 respuestas sirven el commit correcto"
+            echo "Intento $intento/40: $aciertos/10 respuestas sirven el commit correcto"
 
             if [ "$aciertos" -eq 10 ]; then
               echo "Todo el tráfico sirve el commit ${{ github.sha }}."
@@ -272,10 +257,12 @@ jobs:
               exit 0
             fi
 
-            sleep 15
+            sleep 30
           done
 
-          echo "::error::El servicio no sirvió esta versión de forma consistente en 5 minutos."
+          echo "::error::El servicio no sirvió esta versión de forma consistente en 20 minutos."
+          echo "::error::Revisa si ECS revirtió el despliegue: la alarma default/catalogo-api/RollbackAlarm"
+          echo "::error::se dispara ante errores 5XX durante el trasvase de tráfico del canary."
           exit 1
 
       - name: El catálogo sigue protegido
