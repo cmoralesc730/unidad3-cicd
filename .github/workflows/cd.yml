@@ -1,0 +1,282 @@
+# =============================================================================
+#  CD  —  despliegue continuo a AWS.
+#
+#  Se ejecuta en cada push a `main`, y también a mano desde la pestaña Actions.
+#
+#  Secuencia:
+#     verificar  ──▶  desplegar  ──▶  comprobar
+#     (lint,          (imagen a ECR      (curl contra la
+#      formato,        + actualizar       URL pública
+#      pruebas,        el servicio)       HTTPS)
+#      build)
+#
+#  Autenticación: OIDC. GitHub emite un token firmado que STS canjea por
+#  credenciales temporales. No hay claves de acceso permanentes en el repositorio.
+#
+#  Alcance deliberado: este pipeline SOLO cambia la imagen en ejecución. La red,
+#  la CPU, la memoria, el escalado y el secreto los gobierna Terraform, que vive
+#  en un proyecto separado y fuera de este repositorio. El rol de IAM que asume el
+#  pipeline ni siquiera tiene permisos para modificar esas cosas.
+#
+#  Variables del repositorio necesarias
+#  (Settings > Secrets and variables > Actions > Variables):
+#     AWS_REGION        p. ej. us-east-1
+#     AWS_ROLE_ARN      output `arn_rol_pipeline` del proyecto Terraform
+#     ECR_REPOSITORY    output `nombre_repositorio` del proyecto de ECR
+#     ECS_SERVICE_ARN   output `arn_servicio` del proyecto Terraform
+# =============================================================================
+name: CD
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A diferencia de CI, aquí NO se cancela una ejecución en curso: interrumpir un
+# despliegue a mitad dejaría el servicio en un estado indeterminado.
+concurrency:
+  group: cd-produccion
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  #  1. Puerta de calidad. Si algo falla aquí, no se despliega nada.
+  # ---------------------------------------------------------------------------
+  verificar:
+    name: Lint, formato y pruebas
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Preparar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: Formato con Prettier
+        run: npm run format:check
+
+      - name: Pruebas
+        run: npm test
+
+  # ---------------------------------------------------------------------------
+  #  2. Publicar la imagen y actualizar el servicio.
+  # ---------------------------------------------------------------------------
+  desplegar:
+    name: Publicar imagen y desplegar
+    needs: verificar
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      # Imprescindible para que la acción de AWS pueda pedir el token OIDC.
+      id-token: write
+
+    # Vincular el job a un entorno permite exigir aprobación manual antes de
+    # desplegar (Settings > Environments > produccion > Required reviewers).
+    environment:
+      name: produccion
+      url: ${{ steps.servicio.outputs.url }}
+
+    outputs:
+      url: ${{ steps.servicio.outputs.url }}
+
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Obtener credenciales temporales de AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-${{ github.run_id }}
+
+      - name: Iniciar sesión en Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Preparar Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # La etiqueta es el SHA completo del commit: cada imagen es rastreable hasta
+      # el código exacto que la produjo, y `latest` nunca se usa para desplegar.
+      - name: Construir y publicar la imagen
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Buildx añade por defecto atestaciones de procedencia y SBOM, que se
+          # publican como manifiestos adicionales: tres entradas en ECR por cada
+          # imagen en lugar de una. La política de ciclo de vida cuenta entradas,
+          # así que acabaría expirando fragmentos de una imagen todavía en uso.
+          provenance: false
+          sbom: false
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+      # La API de actualización REEMPLAZA el bloque del contenedor por completo.
+      # Si se enviara únicamente la imagen, se perderían el puerto, las variables
+      # de entorno y —lo más grave— la referencia al secreto de SSM, y la tarea
+      # dejaría de arrancar.
+      #
+      # Por eso se lee primero la configuración vigente, se cambian solo la imagen
+      # y la variable VERSION, y se envía el bloque completo de vuelta.
+      - name: Actualizar el servicio con la imagen nueva
+        id: desplegar
+        env:
+          IMAGEN: ${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          echo "Leyendo la configuración vigente del servicio..."
+          aws ecs describe-express-gateway-service \
+            --service-arn "${{ vars.ECS_SERVICE_ARN }}" \
+            --region "${{ vars.AWS_REGION }}" > servicio.json
+
+          # Se parchea sobre la configuración leída: la imagen y la variable
+          # VERSION, que la ruta de salud expone para poder comprobar desde fuera
+          # qué commit está sirviendo.
+          # La configuración vigente cuelga de `activeConfigurations[0]`: la
+          # respuesta de la API no tiene ningún campo `serviceRevision`. `jq -e`
+          # hace que el paso falle si el filtro no encuentra nada, en lugar de
+          # enviar un contenedor vacío al servicio.
+          jq -e --arg imagen "$IMAGEN" --arg version "${{ github.sha }}" '
+            .service.activeConfigurations[0].primaryContainer
+            | .image = $imagen
+            | .environment = (
+                [ (.environment // [])[] | select(.name != "VERSION") ]
+                + [{name: "VERSION", value: $version}]
+              )
+          ' servicio.json > contenedor.json
+
+          echo "Contenedor que se va a desplegar:"
+          jq . contenedor.json
+
+          aws ecs update-express-gateway-service \
+            --service-arn "${{ vars.ECS_SERVICE_ARN }}" \
+            --primary-container "file://contenedor.json" \
+            --region "${{ vars.AWS_REGION }}"
+
+      # ECS realiza un despliegue canary y vigila la versión nueva antes de
+      # trasladarle todo el tráfico, así que la actualización no es inmediata.
+      - name: Esperar a que el despliegue se estabilice
+        run: |
+          set -euo pipefail
+
+          for intento in $(seq 1 40); do
+            estado=$(aws ecs describe-express-gateway-service \
+              --service-arn "${{ vars.ECS_SERVICE_ARN }}" \
+              --region "${{ vars.AWS_REGION }}" \
+              --query 'service.status.statusCode' --output text)
+
+            echo "Intento $intento: estado = $estado"
+
+            if [ "$estado" = "ACTIVE" ]; then
+              echo "Despliegue estabilizado."
+              exit 0
+            fi
+
+            if [ "$estado" = "FAILED" ] || [ "$estado" = "INACTIVE" ]; then
+              echo "::error::El despliegue terminó en estado $estado"
+              exit 1
+            fi
+
+            sleep 15
+          done
+
+          echo "::error::El servicio no alcanzó el estado ACTIVE en 10 minutos."
+          exit 1
+
+      - name: Recuperar la URL pública
+        id: servicio
+        run: |
+          set -euo pipefail
+
+          # `ingressPaths` también cuelga de activeConfigurations[0], y el endpoint
+          # llega como nombre de dominio, sin esquema. Hay que anteponer https://
+          dominio=$(aws ecs describe-express-gateway-service \
+            --service-arn "${{ vars.ECS_SERVICE_ARN }}" \
+            --region "${{ vars.AWS_REGION }}" \
+            --query 'service.activeConfigurations[0].ingressPaths[0].endpoint' --output text)
+
+          url="https://${dominio}"
+          echo "URL del servicio: $url"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------
+  #  3. Comprobar el servicio realmente desplegado.
+  #
+  #     No usa la API key, de modo que su valor nunca aparece en los registros de
+  #     la ejecución. Verifica lo que importa desde fuera: que la versión servida
+  #     es la de este commit y que el catálogo sigue protegido.
+  # ---------------------------------------------------------------------------
+  comprobar:
+    name: Comprobación posterior al despliegue
+    needs: desplegar
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: La ruta de salud sirve esta versión
+        run: |
+          set -euo pipefail
+          url="${{ needs.desplegar.outputs.url }}/salud"
+
+          for intento in $(seq 1 20); do
+            version=$(curl -sf "$url" | jq -r '.version // empty' || true)
+
+            if [ "$version" = "${{ github.sha }}" ]; then
+              echo "El servicio está sirviendo el commit ${{ github.sha }}."
+              curl -s "$url" | jq .
+              exit 0
+            fi
+
+            echo "Intento $intento: versión servida = '${version:-sin respuesta}'"
+            sleep 15
+          done
+
+          echo "::error::El servicio no llegó a servir esta versión en 5 minutos."
+          exit 1
+
+      - name: El catálogo sigue protegido
+        run: |
+          set -euo pipefail
+          codigo=$(curl -s -o /dev/null -w '%{http_code}' "${{ needs.desplegar.outputs.url }}/productos")
+
+          if [ "$codigo" != "401" ]; then
+            echo "::error::Fallo de seguridad: /productos devolvió $codigo sin credenciales."
+            exit 1
+          fi
+          echo "El catálogo responde 401 sin credenciales, como debe."
+
+      - name: Resumen
+        run: |
+          {
+            echo "### Despliegue completado"
+            echo ""
+            echo "- **URL:** ${{ needs.desplegar.outputs.url }}"
+            echo "- **Commit:** \`${{ github.sha }}\`"
+            echo ""
+            echo "Para obtener la credencial:"
+            echo '```bash'
+            echo "aws ssm get-parameter --with-decryption --name /catalogo-api/api-key \\"
+            echo "  --query Parameter.Value --output text"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

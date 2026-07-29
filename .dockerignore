@@ -1,0 +1,13 @@
+# Reduce el contexto de build y evita que nada sensible acabe dentro de la imagen.
+node_modules
+dist
+.git
+.github
+.gitignore
+.gitattributes
+test
+*.md
+.env
+.env.*
+Dockerfile
+.dockerignore

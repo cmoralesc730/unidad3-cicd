@@ -1,0 +1,139 @@
+# =============================================================================
+#  CI  —  comprobaciones de calidad.
+#
+#  Se ejecuta en cada pull request hacia `main` y en cada push a cualquier otra
+#  rama. En `main` no corre: allí actúa `cd.yml`, que repite estas mismas
+#  comprobaciones antes de desplegar.
+#
+#  No toca AWS ni necesita credenciales, así que es seguro ejecutarlo sobre el
+#  código de un pull request externo.
+# =============================================================================
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches-ignore: [main]
+
+# Si llegan varios commits seguidos a la misma rama, se cancela la ejecución
+# anterior: solo interesa el resultado del último.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verificar:
+    name: Lint, formato y pruebas
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Preparar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          # Cachea ~/.npm entre ejecuciones usando el lockfile como clave.
+          cache: 'npm'
+
+      # `npm ci` en lugar de `npm install`: instala exactamente el lockfile y
+      # falla si package.json y package-lock.json están desincronizados.
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: Formato con Prettier
+        run: npm run format:check
+
+      - name: Pruebas
+        run: npm test
+
+      - name: Compilar
+        run: npm run build
+
+  imagen:
+    name: Construir la imagen
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Preparar Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Se construye sin publicar: este workflow no tiene credenciales de AWS.
+      - name: Construir sin publicar
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # Misma plataforma que ejecuta Fargate; construir en arm64 haría que la
+          # tarea fallara con "exec format error".
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: catalogo-api:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Ver la nota de cd.yml: sin esto, cada publicación dejaría tres
+          # entradas en el registro en lugar de una.
+          provenance: false
+          sbom: false
+
+      # Comprueba lo que el build por sí solo no ve: que el contenedor arranca de
+      # verdad. Detecta, por ejemplo, una dependencia de producción eliminada por
+      # `npm prune` pero necesaria en ejecución.
+      - name: Arrancar el contenedor y comprobarlo
+        run: |
+          docker run -d --name prueba \
+            -p 3000:3000 \
+            -e API_KEY=clave-de-verificacion \
+            -e NODE_ENV=production \
+            catalogo-api:ci
+
+          # Espera activa en lugar de un `sleep` fijo.
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3000/salud > /dev/null; then
+              echo "El servicio respondió tras ${i}s"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "::error::El contenedor no respondió en 30 segundos"
+              docker logs prueba
+              exit 1
+            fi
+            sleep 1
+          done
+
+          echo "--- /salud debe responder 200 ---"
+          curl -sf http://localhost:3000/salud
+          echo
+
+          echo "--- /productos sin credenciales debe responder 401 ---"
+          codigo=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/productos)
+          if [ "$codigo" != "401" ]; then
+            echo "::error::Se esperaba 401 sin API key, se obtuvo $codigo"
+            docker logs prueba
+            exit 1
+          fi
+
+          echo "--- alta de producto con credenciales debe responder 201 ---"
+          codigo=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:3000/productos \
+            -H 'x-api-key: clave-de-verificacion' \
+            -H 'Content-Type: application/json' \
+            -d '{"sku":"CI-001","nombre":"Producto de prueba","precio":10.5,"stock":3}')
+          if [ "$codigo" != "201" ]; then
+            echo "::error::Se esperaba 201 al crear un producto, se obtuvo $codigo"
+            docker logs prueba
+            exit 1
+          fi
+
+          echo "Comprobación superada."
+          docker rm -f prueba

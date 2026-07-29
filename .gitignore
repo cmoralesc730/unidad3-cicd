@@ -1,0 +1,17 @@
+# Dependencias y artefactos de compilación
+node_modules/
+dist/
+*.tsbuildinfo
+npm-debug.log*
+
+# Configuración local. En AWS las variables vienen del entorno del contenedor,
+# nunca de un archivo; este .env es solo para desarrollo.
+.env
+.env.*
+!.env.example
+
+# Sistema operativo y editores
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

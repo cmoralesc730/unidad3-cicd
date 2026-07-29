@@ -1,0 +1,10 @@
+# Normaliza los finales de línea a LF dentro del repositorio.
+#
+# No es cosmético: los workflows ejecutan sus bloques `run:` con bash sobre Linux.
+# Un archivo commiteado con finales CRLF desde Windows haría que bash interpretara
+# el retorno de carro como parte del comando, fallando con "$'\r': command not found".
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
