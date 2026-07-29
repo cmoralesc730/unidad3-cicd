@@ -1,3 +1,4 @@
+import { ApiProperty } from '@nestjs/swagger';
 import { IsInt, IsNumber, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
 
 /**
@@ -10,18 +11,27 @@ import { IsInt, IsNumber, IsString, Matches, Max, MaxLength, Min } from 'class-v
  *
  * Las reglas se aplican con el `ValidationPipe` global configurado en `main.ts`,
  * que además rechaza con 400 cualquier propiedad que no esté declarada aquí.
+ *
+ * Los decoradores `@ApiProperty` no validan nada: solo describen el campo en la
+ * documentación interactiva. Quien decide qué se acepta es `class-validator`.
  */
 export class GuardarProductoDto {
   /**
    * Código de catálogo. Se restringe a mayúsculas, dígitos y guiones para que sea
    * seguro usarlo en URL, informes y sistemas externos sin escapado.
    */
+  @ApiProperty({
+    description: 'Código de catálogo, único. Mayúsculas, dígitos y guiones.',
+    pattern: '^[A-Z0-9-]{3,20}$',
+    example: 'TEC-001',
+  })
   @IsString()
   @Matches(/^[A-Z0-9-]{3,20}$/, {
     message: 'sku debe tener entre 3 y 20 caracteres: mayúsculas, dígitos o guiones.',
   })
   sku!: string;
 
+  @ApiProperty({ description: 'Nombre comercial.', maxLength: 80, example: 'Teclado mecánico' })
   @IsString()
   @MaxLength(80)
   nombre!: string;
@@ -30,11 +40,18 @@ export class GuardarProductoDto {
    * `maxDecimalPlaces` evita almacenar precios con más precisión de la que el
    * catálogo puede representar (p. ej. 10.999 redondeado de forma imprevisible).
    */
+  @ApiProperty({
+    description: 'Precio unitario. Máximo 2 decimales.',
+    minimum: 0,
+    maximum: 1000000,
+    example: 899.5,
+  })
   @IsNumber({ maxDecimalPlaces: 2 }, { message: 'precio admite como máximo 2 decimales.' })
   @Min(0, { message: 'precio no puede ser negativo.' })
   @Max(1_000_000)
   precio!: number;
 
+  @ApiProperty({ description: 'Unidades disponibles. Entero.', minimum: 0, example: 12 })
   @IsInt({ message: 'stock debe ser un número entero.' })
   @Min(0, { message: 'stock no puede ser negativo.' })
   stock!: number;

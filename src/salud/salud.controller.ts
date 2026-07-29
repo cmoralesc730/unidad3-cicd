@@ -1,5 +1,6 @@
 import { Controller, Get } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Publico } from '../auth/publico.decorator';
 import { ProductosService } from '../productos/productos.service';
 
@@ -29,6 +30,7 @@ export interface EstadoServicio {
  * `version` es deliberadamente la excepción útil: expone qué build está en línea,
  * que es información pública en un repositorio abierto.
  */
+@ApiTags('informacion')
 @Controller('salud')
 export class SaludController {
   constructor(
@@ -38,6 +40,8 @@ export class SaludController {
 
   @Publico()
   @Get()
+  @ApiOperation({ summary: 'Estado del servicio (no requiere credenciales)' })
+  @ApiOkResponse({ description: 'Estado, versión desplegada y tamaño del catálogo.' })
   revisar(): EstadoServicio {
     return {
       estado: 'ok',

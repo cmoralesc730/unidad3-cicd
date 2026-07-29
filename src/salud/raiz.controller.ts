@@ -1,6 +1,8 @@
 import { Controller, Get } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Publico } from '../auth/publico.decorator';
+import { RUTA_DOCUMENTACION } from '../documentacion';
 
 /** Cuerpo que devuelve la raíz del servicio. */
 export interface Portada {
@@ -21,12 +23,15 @@ export interface Portada {
  * el repositorio, y advierte de que el catálogo exige credenciales. No expone
  * datos, ni configuración, ni detalles de la infraestructura.
  */
+@ApiTags('informacion')
 @Controller()
 export class RaizController {
   constructor(private readonly configuracion: ConfigService) {}
 
   @Publico()
   @Get()
+  @ApiOperation({ summary: 'Portada del servicio (no requiere credenciales)' })
+  @ApiOkResponse({ description: 'Nombre, versión y rutas disponibles.' })
   portada(): Portada {
     return {
       servicio: 'catalogo-api',
@@ -34,6 +39,7 @@ export class RaizController {
       rutas: {
         salud: '/salud',
         productos: '/productos',
+        documentacion: `/${RUTA_DOCUMENTACION}`,
       },
       autenticacion: 'Las rutas de /productos exigen la cabecera x-api-key.',
     };

@@ -11,3 +11,4 @@ test
 .env.*
 Dockerfile
 .dockerignore
+peticiones.http

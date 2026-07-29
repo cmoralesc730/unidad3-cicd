@@ -1,0 +1,150 @@
+# =============================================================================
+#  Peticiones de la Catálogo API
+#
+#  Alternativa a la documentación interactiva de /docs, útil mientras se
+#  desarrolla: no depende de que el servicio esté desplegado y funciona igual
+#  contra local que contra AWS.
+#
+#  Cómo usarlo:
+#    - VS Code: instala la extensión "REST Client" (humao.rest-client). Aparece
+#      un enlace "Send Request" encima de cada petición.
+#    - JetBrains: se abre de forma nativa como HTTP Client.
+#
+#  Antes de empezar, obtén la credencial:
+#
+#      aws ssm get-parameter --with-decryption --name /catalogo-api/api-key \
+#        --query Parameter.Value --output text
+#
+#  y pégala abajo, en @apiKey.
+#
+#  Para alternar entre local y AWS, comenta y descomenta la variable @url.
+# =============================================================================
+
+### Variables ----------------------------------------------------------------
+
+# Servicio desplegado en AWS
+@url = https://ca-8682bfbdc490411db35171ebb1ee6e51.ecs.us-east-1.on.aws
+
+# Desarrollo local (npm run start:dev)
+# @url = http://localhost:3000
+
+@apiKey = PEGA_AQUI_LA_CREDENCIAL
+
+# Se rellena a mano con el id que devuelve el alta.
+@id = PEGA_AQUI_EL_ID
+
+
+### =========================================================================
+###  Rutas públicas — no requieren credenciales
+### =========================================================================
+
+### Portada: nombre del servicio, versión desplegada y rutas disponibles
+GET {{url}}/
+
+### Estado del servicio. `version` es el SHA del commit que está corriendo.
+GET {{url}}/salud
+
+### Documentación interactiva (ábrela en el navegador)
+GET {{url}}/docs
+
+
+### =========================================================================
+###  CRUD — todas exigen la cabecera x-api-key
+### =========================================================================
+
+### Alta de un producto  ->  201
+# El id que devuelva va en la variable @id de arriba.
+POST {{url}}/productos
+x-api-key: {{apiKey}}
+Content-Type: application/json
+
+{
+  "sku": "TEC-001",
+  "nombre": "Teclado mecánico",
+  "precio": 899.5,
+  "stock": 12
+}
+
+### Listar el catálogo, ordenado por sku  ->  200
+GET {{url}}/productos
+x-api-key: {{apiKey}}
+
+### Obtener un producto  ->  200
+GET {{url}}/productos/{{id}}
+x-api-key: {{apiKey}}
+
+### Reemplazar un producto  ->  200
+# PUT es un reemplazo COMPLETO: hay que enviar los cuatro campos.
+# Solo se conservan el id y la fecha de alta.
+PUT {{url}}/productos/{{id}}
+x-api-key: {{apiKey}}
+Content-Type: application/json
+
+{
+  "sku": "TEC-002",
+  "nombre": "Teclado inalámbrico",
+  "precio": 1250,
+  "stock": 4
+}
+
+### Eliminar un producto  ->  204 sin cuerpo
+DELETE {{url}}/productos/{{id}}
+x-api-key: {{apiKey}}
+
+
+### =========================================================================
+###  Casos de error — útiles para demostrar que las reglas funcionan
+### =========================================================================
+
+### Sin credenciales  ->  401
+GET {{url}}/productos
+
+### Con una credencial incorrecta  ->  401
+GET {{url}}/productos
+x-api-key: credencial-invalida
+
+### sku en minúsculas, precio negativo y stock decimal  ->  400
+POST {{url}}/productos
+x-api-key: {{apiKey}}
+Content-Type: application/json
+
+{
+  "sku": "minusculas",
+  "nombre": "Producto inválido",
+  "precio": -1,
+  "stock": 1.5
+}
+
+### Campo no declarado en el DTO  ->  400
+POST {{url}}/productos
+x-api-key: {{apiKey}}
+Content-Type: application/json
+
+{
+  "sku": "ABC-123",
+  "nombre": "Producto",
+  "precio": 10,
+  "stock": 1,
+  "descuento": 50
+}
+
+### sku repetido  ->  409
+# Lanza dos veces seguidas esta petición: la segunda debe dar conflicto.
+POST {{url}}/productos
+x-api-key: {{apiKey}}
+Content-Type: application/json
+
+{
+  "sku": "DUP-001",
+  "nombre": "Primer producto",
+  "precio": 10,
+  "stock": 1
+}
+
+### Identificador con formato no UUID  ->  400
+GET {{url}}/productos/no-es-un-uuid
+x-api-key: {{apiKey}}
+
+### Producto inexistente  ->  404
+GET {{url}}/productos/00000000-0000-4000-8000-000000000000
+x-api-key: {{apiKey}}

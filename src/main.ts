@@ -2,6 +2,7 @@ import { Logger, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
+import { publicarDocumentacion, RUTA_DOCUMENTACION } from './documentacion';
 
 /**
  * Arranque del servicio.
@@ -42,11 +43,17 @@ async function arrancar(): Promise<void> {
     }),
   );
 
+  // Documentación interactiva en /docs. Se publica también en producción; el
+  // porqué está explicado en documentacion.ts.
+  publicarDocumentacion(app, version);
+
   app.enableShutdownHooks();
 
   await app.listen(puerto, '0.0.0.0');
 
-  new Logger('Arranque').log(`Escuchando en 0.0.0.0:${puerto} · modo=${modo} · versión=${version}`);
+  new Logger('Arranque').log(
+    `Escuchando en 0.0.0.0:${puerto} · modo=${modo} · versión=${version} · docs en /${RUTA_DOCUMENTACION}`,
+  );
 }
 
 arrancar().catch((error) => {

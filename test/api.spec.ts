@@ -4,6 +4,7 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
 import { CABECERA_API_KEY } from '../src/auth/api-key.service';
+import { publicarDocumentacion } from '../src/documentacion';
 
 /**
  * Suite de la API.
@@ -37,10 +38,11 @@ describe('API de catálogo', () => {
 
     app = modulo.createNestApplication();
     // Se replica la configuración de main.ts para probar el mismo comportamiento
-    // que tendrá el servicio desplegado.
+    // que tendrá el servicio desplegado: la validación global y la documentación.
     app.useGlobalPipes(
       new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
     );
+    publicarDocumentacion(app, 'pruebas');
     await app.init();
   });
 
@@ -121,8 +123,21 @@ describe('API de catálogo', () => {
     expect(portada.body).toMatchObject({
       servicio: 'catalogo-api',
       version: 'pruebas',
-      rutas: { salud: '/salud', productos: '/productos' },
+      rutas: { salud: '/salud', productos: '/productos', documentacion: '/docs' },
     });
+
+    // La documentación interactiva se sirve como middleware, fuera del alcance
+    // del guard, así que también debe responder sin credenciales.
+    await http().get('/docs').expect(200);
+    // Y la especificación que la alimenta declara las cuatro rutas del servicio,
+    // que agrupan las seis operaciones del CRUD más las dos públicas.
+    const openapi = await http().get('/docs-json').expect(200);
+    expect(Object.keys(openapi.body.paths).sort()).toEqual([
+      '/',
+      '/productos',
+      '/productos/{id}',
+      '/salud',
+    ]);
   });
 
   it('rechaza cuerpos e identificadores que no cumplen las reglas', async () => {

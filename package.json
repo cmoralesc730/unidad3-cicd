@@ -23,10 +23,17 @@
     "@nestjs/config": "^4.0.2",
     "@nestjs/core": "^11.0.12",
     "@nestjs/platform-express": "^11.0.12",
+    "@nestjs/swagger": "^11.1.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2"
+  },
+  "overridesComment": "@nestjs/swagger arrastra js-yaml 5.2.1, afectado por GHSA-pm4m-ph32-ghv5 (denegacion de servicio por tiempo de parseo exponencial). Se fuerza la version parcheada solo dentro de esa rama del arbol de dependencias.",
+  "overrides": {
+    "@nestjs/swagger": {
+      "js-yaml": "^5.2.2"
+    }
   },
   "devDependencies": {
     "@eslint/js": "^9.23.0",
