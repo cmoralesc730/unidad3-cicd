@@ -6,7 +6,7 @@ import { ProductosService } from '../productos/productos.service';
 
 /** Cuerpo que devuelve la ruta de salud. */
 export interface EstadoServicio {
-  estado: 'ok';
+  estado: 'hola';
   /** Versión desplegada. Con el pipeline en marcha, es el SHA del commit. */
   version: string;
   modo: string;
