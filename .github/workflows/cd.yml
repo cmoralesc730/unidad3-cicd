@@ -177,32 +177,45 @@ jobs:
 
       # ECS realiza un despliegue canary y vigila la versión nueva antes de
       # trasladarle todo el tráfico, así que la actualización no es inmediata.
+      # Durante el despliegue conviven DOS configuraciones activas —la anterior y
+      # la nueva— y el balanceador reparte el tráfico entre ambas mientras dura el
+      # canary. El despliegue solo ha terminado cuando queda una sola, y es la
+      # nueva.
+      #
+      # No sirve mirar `service.status.statusCode`: ese campo describe el estado
+      # del SERVICIO, que vale ACTIVE de forma permanente, también mientras el
+      # despliegue está en curso. Consultarlo daría por bueno el despliegue de
+      # inmediato y dejaría pasar una versión que aún no atiende todo el tráfico.
       - name: Esperar a que el despliegue se estabilice
+        env:
+          IMAGEN: ${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ github.sha }}
         run: |
           set -euo pipefail
 
-          for intento in $(seq 1 40); do
-            estado=$(aws ecs describe-express-gateway-service \
+          for intento in $(seq 1 60); do
+            aws ecs describe-express-gateway-service \
               --service-arn "${{ vars.ECS_SERVICE_ARN }}" \
-              --region "${{ vars.AWS_REGION }}" \
-              --query 'service.status.statusCode' --output text)
+              --region "${{ vars.AWS_REGION }}" > estado.json
 
-            echo "Intento $intento: estado = $estado"
+            total=$(jq '.service.activeConfigurations | length' estado.json)
+            imagenes=$(jq -r '[.service.activeConfigurations[].primaryContainer.image] | join(" ")' estado.json)
 
-            if [ "$estado" = "ACTIVE" ]; then
-              echo "Despliegue estabilizado."
+            echo "Intento $intento: $total configuración(es) activa(s) -> $imagenes"
+
+            if [ "$total" -eq 1 ] && [ "$imagenes" = "$IMAGEN" ]; then
+              echo "Despliegue completado: toda la capacidad sirve la imagen nueva."
               exit 0
             fi
 
-            if [ "$estado" = "FAILED" ] || [ "$estado" = "INACTIVE" ]; then
-              echo "::error::El despliegue terminó en estado $estado"
+            if [ "$total" -eq 1 ] && [ "$imagenes" != "$IMAGEN" ]; then
+              echo "::error::El despliegue se revirtió; la configuración activa es $imagenes"
               exit 1
             fi
 
             sleep 15
           done
 
-          echo "::error::El servicio no alcanzó el estado ACTIVE en 10 minutos."
+          echo "::error::El despliegue no convergió en 15 minutos."
           exit 1
 
       - name: Recuperar la URL pública
@@ -234,25 +247,35 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Se exigen DIEZ respuestas consecutivas con la versión correcta, no una.
+      # Con una sola bastaría con acertar la petición que cae en la tarea nueva
+      # mientras el canary todavía reparte tráfico, y el pipeline daría por bueno
+      # un despliegue a medias.
       - name: La ruta de salud sirve esta versión
         run: |
           set -euo pipefail
           url="${{ needs.desplegar.outputs.url }}/salud"
 
           for intento in $(seq 1 20); do
-            version=$(curl -sf "$url" | jq -r '.version // empty' || true)
+            aciertos=0
 
-            if [ "$version" = "${{ github.sha }}" ]; then
-              echo "El servicio está sirviendo el commit ${{ github.sha }}."
+            for _ in $(seq 1 10); do
+              version=$(curl -sf "$url" | jq -r '.version // empty' || true)
+              [ "$version" = "${{ github.sha }}" ] && aciertos=$((aciertos + 1))
+            done
+
+            echo "Intento $intento: $aciertos/10 respuestas sirven el commit correcto"
+
+            if [ "$aciertos" -eq 10 ]; then
+              echo "Todo el tráfico sirve el commit ${{ github.sha }}."
               curl -s "$url" | jq .
               exit 0
             fi
 
-            echo "Intento $intento: versión servida = '${version:-sin respuesta}'"
             sleep 15
           done
 
-          echo "::error::El servicio no llegó a servir esta versión en 5 minutos."
+          echo "::error::El servicio no sirvió esta versión de forma consistente en 5 minutos."
           exit 1
 
       - name: El catálogo sigue protegido
