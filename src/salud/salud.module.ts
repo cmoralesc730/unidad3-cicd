@@ -15,4 +15,3 @@ import { SaludController } from './salud.controller';
   controllers: [RaizController, SaludController],
 })
 export class SaludModule {}
-/** */
