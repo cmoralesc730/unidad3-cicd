@@ -6,7 +6,7 @@ import { ProductosService } from '../productos/productos.service';
 
 /** Cuerpo que devuelve la ruta de salud. */
 export interface EstadoServicio {
-  estado: 'hola';
+  estado: 'ok';
   /** Versión desplegada. Con el pipeline en marcha, es el SHA del commit. */
   version: string;
   modo: string;
@@ -44,7 +44,7 @@ export class SaludController {
   @ApiOkResponse({ description: 'Estado, versión desplegada y tamaño del catálogo.' })
   revisar(): EstadoServicio {
     return {
-      estado: 'hola',
+      estado: 'ok',
       version: this.configuracion.get<string>('version') ?? 'desconocida',
       modo: this.configuracion.get<string>('modo') ?? 'desconocido',
       segundosActivo: Math.floor(process.uptime()),

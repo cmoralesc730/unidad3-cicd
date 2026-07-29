@@ -10,6 +10,7 @@ export interface Portada {
   version: string;
   rutas: Record<string, string>;
   autenticacion: string;
+  saludo: string;
 }
 
 /**
@@ -42,6 +43,7 @@ export class RaizController {
         documentacion: `/${RUTA_DOCUMENTACION}`,
       },
       autenticacion: 'Las rutas de /productos exigen la cabecera x-api-key.',
+      saludo: 'hola',
     };
   }
 }
