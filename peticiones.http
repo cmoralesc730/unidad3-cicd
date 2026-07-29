@@ -27,7 +27,7 @@
 # Ojo: este dominio lo asigna Express Mode con un identificador aleatorio, así que
 # CAMBIA si se destruye y se vuelve a crear la infraestructura. Para consultarlo:
 #     cd infra/app && terraform output -raw url_servicio
-@url = https://ca-321fbdf619f1437287dc5a71a387a177.ecs.us-east-1.on.aws
+@url = https://ca-346a2809e5c74fcb817e897dacba24d4.ecs.us-east-1.on.aws
 
 # Desarrollo local (npm run start:dev)
 # @url = http://localhost:3000
