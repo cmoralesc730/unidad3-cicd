@@ -44,7 +44,7 @@ export class SaludController {
   @ApiOkResponse({ description: 'Estado, versión desplegada y tamaño del catálogo.' })
   revisar(): EstadoServicio {
     return {
-      estado: 'ok',
+      estado: 'hola',
       version: this.configuracion.get<string>('version') ?? 'desconocida',
       modo: this.configuracion.get<string>('modo') ?? 'desconocido',
       segundosActivo: Math.floor(process.uptime()),
